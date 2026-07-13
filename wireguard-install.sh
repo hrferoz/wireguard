@@ -241,6 +241,44 @@ function promptServerPort() {
 	esac
 }
 
+function prepareIptablesFirewall() {
+	if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+		echo -e "${ORANGE}Stopping firewalld — WireGuard uses iptables for firewall rules.${NC}"
+		systemctl stop firewalld
+		systemctl disable firewalld
+	fi
+
+	if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+		echo -e "${ORANGE}Disabling UFW — WireGuard uses iptables for firewall rules.${NC}"
+		ufw disable || true
+	fi
+}
+
+function appendWireGuardIptablesRules() {
+	local wg_subnet_ipv4
+
+	wg_subnet_ipv4=$(echo "${SERVER_WG_IPV4}" | cut -d"." -f1-3)".0"
+
+	echo "PostUp = iptables -I INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT
+PostUp = iptables -I FORWARD -i ${SERVER_PUB_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
+PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -o ${SERVER_PUB_NIC} -j ACCEPT
+PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
+PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -s ${wg_subnet_ipv4}/24 -j ACCEPT
+PostUp = iptables -I FORWARD -o ${SERVER_WG_NIC} -d ${wg_subnet_ipv4}/24 -j ACCEPT
+PostUp = iptables -t nat -A POSTROUTING -s ${wg_subnet_ipv4}/24 -o ${SERVER_PUB_NIC} -j MASQUERADE
+PostUp = ip6tables -I FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
+PostUp = ip6tables -t nat -A POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE
+PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT
+PostDown = iptables -D FORWARD -i ${SERVER_PUB_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
+PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -o ${SERVER_PUB_NIC} -j ACCEPT
+PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
+PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -s ${wg_subnet_ipv4}/24 -j ACCEPT
+PostDown = iptables -D FORWARD -o ${SERVER_WG_NIC} -d ${wg_subnet_ipv4}/24 -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -s ${wg_subnet_ipv4}/24 -o ${SERVER_PUB_NIC} -j MASQUERADE
+PostDown = ip6tables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
+PostDown = ip6tables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+}
+
 function installQuestions() {
 	if isAutoInstall; then
 		echo "WireGuard PBX installer — zero-touch mode (AUTO_INSTALL=y)"
@@ -378,7 +416,7 @@ function installWireGuard() {
 		dnf config-manager --save -y --setopt=ol8_developer_UEKR6.includepkgs='wireguard-tools*'
 		installPackages dnf install -y wireguard-tools qrencode iptables
 	elif [[ ${OS} == 'arch' ]]; then
-		installPackages pacman -S --needed --noconfirm wireguard-tools qrencode
+		installPackages pacman -S --needed --noconfirm wireguard-tools iptables qrencode
 	elif [[ ${OS} == 'alpine' ]]; then
 		apk update
 		installPackages apk add wireguard-tools iptables libqrencode-tools
@@ -418,27 +456,10 @@ WG_MTU=${WG_MTU}" >/etc/wireguard/params
 Address = ${SERVER_WG_IPV4}/24,${SERVER_WG_IPV6}/64
 ListenPort = ${SERVER_PORT}
 PrivateKey = ${SERVER_PRIV_KEY}
-MTU = ${WG_MTU}" >"/etc/wireguard/${SERVER_WG_NIC}.conf"
+	MTU = ${WG_MTU}" >"/etc/wireguard/${SERVER_WG_NIC}.conf"
 
-	if pgrep firewalld; then
-		FIREWALLD_IPV4_ADDRESS=$(echo "${SERVER_WG_IPV4}" | cut -d"." -f1-3)".0"
-		FIREWALLD_IPV6_ADDRESS=$(echo "${SERVER_WG_IPV6}" | sed 's/:[^:]*$/:0/')
-		echo "PostUp = firewall-cmd --zone=public --add-interface=${SERVER_WG_NIC} && firewall-cmd --add-port ${SERVER_PORT}/udp && firewall-cmd --add-rich-rule='rule family=ipv4 source address=${FIREWALLD_IPV4_ADDRESS}/24 masquerade' && firewall-cmd --add-rich-rule='rule family=ipv6 source address=${FIREWALLD_IPV6_ADDRESS}/24 masquerade'
-PostDown = firewall-cmd --zone=public --add-interface=${SERVER_WG_NIC} && firewall-cmd --remove-port ${SERVER_PORT}/udp && firewall-cmd --remove-rich-rule='rule family=ipv4 source address=${FIREWALLD_IPV4_ADDRESS}/24 masquerade' && firewall-cmd --remove-rich-rule='rule family=ipv6 source address=${FIREWALLD_IPV6_ADDRESS}/24 masquerade'" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
-	else
-		echo "PostUp = iptables -I INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT
-PostUp = iptables -I FORWARD -i ${SERVER_PUB_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
-PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
-PostUp = iptables -t nat -A POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE
-PostUp = ip6tables -I FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
-PostUp = ip6tables -t nat -A POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE
-PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT
-PostDown = iptables -D FORWARD -i ${SERVER_PUB_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
-PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
-PostDown = iptables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE
-PostDown = ip6tables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
-PostDown = ip6tables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
-	fi
+	prepareIptablesFirewall
+	appendWireGuardIptablesRules
 
 	# Enable routing on the server
 	echo "net.ipv4.ip_forward = 1
@@ -489,7 +510,7 @@ net.ipv6.conf.all.forwarding = 1" >/etc/sysctl.d/wg.conf
 		else
 			echo -e "${GREEN}You can check the status of WireGuard with: systemctl status wg-quick@${SERVER_WG_NIC}\n\n${NC}"
 		fi
-		echo -e "${ORANGE}If PBX peers cannot reach each other, verify AllowedIPs stays limited to ${WG_SUBNET_CIDR} and check firewall rules.${NC}"
+		echo -e "${ORANGE}If PBX peers cannot reach each other, verify AllowedIPs stays limited to ${WG_SUBNET_CIDR} and check iptables rules.${NC}"
 	fi
 }
 
