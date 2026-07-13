@@ -116,6 +116,48 @@ function prepareIptablesFirewall() {
 	fi
 }
 
+function loadWireGuardModule() {
+	if lsmod | grep -q '^wireguard'; then
+		return 0
+	fi
+
+	depmod -a 2>/dev/null || true
+
+	if modprobe wireguard 2>/dev/null; then
+		echo -e "${GREEN}Loaded wireguard kernel module.${NC}"
+		return 0
+	fi
+
+	return 1
+}
+
+function hostSupportsIpv6() {
+	[[ $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null) != "1" ]] && ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'
+}
+
+function adaptConfigForHost() {
+	local config_file=$1
+
+	if ! hostSupportsIpv6 && grep -E 'Address = .*,|:.*:' "${config_file}" >/dev/null; then
+		echo -e "${ORANGE}IPv6 is unavailable on this host — using IPv4-only client config.${NC}"
+		sed -i -E 's/^Address = ([0-9.]+)\/[0-9]+,.*/Address = \1\/32/' "${config_file}"
+	fi
+
+	if grep -q '^DNS' "${config_file}" && ! command -v resolvconf &>/dev/null; then
+		echo -e "${ORANGE}resolvconf not found — removing DNS from config (not required for PBX split tunnel).${NC}"
+		sed -i '/^DNS/d' "${config_file}"
+	fi
+}
+
+function validateConfigSyntax() {
+	if ! wg-quick strip "${WG_INTERFACE}" >/dev/null 2>&1; then
+		echo -e "${RED}WireGuard config syntax check failed for /etc/wireguard/${WG_INTERFACE}.conf${NC}"
+		echo -e "${ORANGE}Config contents:${NC}"
+		sed 's/PrivateKey = .*/PrivateKey = <hidden>/; s/PresharedKey = .*/PresharedKey = <hidden>/' "/etc/wireguard/${WG_INTERFACE}.conf"
+		exit 1
+	fi
+}
+
 function installWireGuardPackages() {
 	echo -e "${GREEN}Installing WireGuard packages for ${OS}...${NC}"
 
@@ -140,6 +182,7 @@ function installWireGuardPackages() {
 	elif [[ ${OS} == 'centos7' ]]; then
 		installPackages yum install -y epel-release elrepo-release
 		installPackages yum install -y kmod-wireguard wireguard-tools iptables
+		depmod -a 2>/dev/null || true
 	elif [[ ${OS} == 'centos' ]] || [[ ${OS} == 'almalinux' ]] || [[ ${OS} == 'rocky' ]]; then
 		if [[ ${VERSION_ID} == 8* ]]; then
 			installPackages yum install -y epel-release elrepo-release
@@ -262,19 +305,63 @@ function deployClientConfig() {
 
 	ensureClientMtu "/etc/wireguard/${WG_INTERFACE}.conf"
 	ensurePersistentKeepalive "/etc/wireguard/${WG_INTERFACE}.conf"
+	adaptConfigForHost "/etc/wireguard/${WG_INTERFACE}.conf"
+	validateConfigSyntax
 
 	echo -e "${GREEN}Client config installed: /etc/wireguard/${WG_INTERFACE}.conf${NC}"
 }
 
+function showStartFailureDiagnostics() {
+	echo ""
+	echo -e "${RED}WireGuard failed to start. Diagnostics:${NC}"
+	echo ""
+
+	if ! loadWireGuardModule; then
+		echo -e "${ORANGE}Kernel module 'wireguard' is not loaded.${NC}"
+		echo "  Running kernel: $(uname -r)"
+		if [[ ${OS} == 'centos7' ]]; then
+			echo "  Try: yum install -y kmod-wireguard && depmod -a && modprobe wireguard"
+			echo "  If modprobe still fails, reboot into the current kernel and retry."
+		else
+			echo "  Try: modprobe wireguard"
+		fi
+		echo ""
+	fi
+
+	if [[ ${OS} != 'alpine' ]]; then
+		journalctl -u "wg-quick@${WG_INTERFACE}" -n 30 --no-pager 2>/dev/null || true
+		echo ""
+	fi
+
+	echo -e "${ORANGE}Manual start output:${NC}"
+	wg-quick down "${WG_INTERFACE}" 2>/dev/null || true
+	wg-quick up "${WG_INTERFACE}" 2>&1 || true
+	echo ""
+}
+
 function startWireGuardClient() {
+	if ! loadWireGuardModule; then
+		echo -e "${RED}Cannot load wireguard kernel module before starting the interface.${NC}"
+		showStartFailureDiagnostics
+		return 1
+	fi
+
 	if [[ ${OS} == 'alpine' ]]; then
 		ln -sf /etc/init.d/wg-quick "/etc/init.d/wg-quick.${WG_INTERFACE}" 2>/dev/null || true
 		rc-update add "wg-quick.${WG_INTERFACE}" 2>/dev/null || true
-		rc-service "wg-quick.${WG_INTERFACE}" restart
+		if ! rc-service "wg-quick.${WG_INTERFACE}" start; then
+			showStartFailureDiagnostics
+			return 1
+		fi
 	else
 		systemctl enable "wg-quick@${WG_INTERFACE}"
-		systemctl restart "wg-quick@${WG_INTERFACE}"
+		if ! systemctl start "wg-quick@${WG_INTERFACE}"; then
+			showStartFailureDiagnostics
+			return 1
+		fi
 	fi
+
+	return 0
 }
 
 function checkWireGuardRunning() {
@@ -328,14 +415,17 @@ function main() {
 	prepareIptablesFirewall
 	installWireGuardPackages
 	deployClientConfig
-	startWireGuardClient
+	START_RESULT=0
+	startWireGuardClient || START_RESULT=1
 
-	if checkWireGuardRunning; then
+	if [[ ${START_RESULT} -eq 0 ]] && checkWireGuardRunning; then
 		echo -e "\n${GREEN}WireGuard client is running on ${WG_INTERFACE}.${NC}"
 		wg show "${WG_INTERFACE}" 2>/dev/null || true
 	else
 		echo -e "\n${RED}WARNING: WireGuard client does not appear to be running.${NC}"
-		echo -e "${ORANGE}If you see \"Cannot find device ${WG_INTERFACE}\", reboot and run the restart command below.${NC}"
+		if [[ ${START_RESULT} -eq 0 ]]; then
+			showStartFailureDiagnostics
+		fi
 	fi
 
 	showServiceCommands
