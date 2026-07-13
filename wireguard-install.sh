@@ -13,6 +13,8 @@ WG_SUBNET_CIDR='10.8.0.0/24'
 WG_SERVER_IPV4='10.8.0.1'
 WG_CLIENT_IPV4_START=2
 WG_DEFAULT_PORT=51820
+WG_RANDOM_PORT_MIN=49152
+WG_RANDOM_PORT_MAX=65535
 WG_DEFAULT_MTU=1360
 WG_MTU_OVERHEAD=60
 WG_PERSISTENT_KEEPALIVE=25
@@ -194,6 +196,51 @@ function initialCheck() {
 	checkVirt
 }
 
+function generateRandomPort() {
+	shuf -i"${WG_RANDOM_PORT_MIN}"-"${WG_RANDOM_PORT_MAX}" -n1
+}
+
+function resolveServerPort() {
+	local port_value="${1:-${WG_PORT:-${WG_DEFAULT_PORT}}}"
+
+	if [[ "${port_value}" == "random" ]]; then
+		SERVER_PORT=$(generateRandomPort)
+		echo -e "${GREEN}Random port selected: ${SERVER_PORT}${NC}"
+	else
+		SERVER_PORT="${port_value}"
+	fi
+
+	if [[ ! "${SERVER_PORT}" =~ ^[0-9]+$ ]] || [[ ${SERVER_PORT} -lt 1 ]] || [[ ${SERVER_PORT} -gt 65535 ]]; then
+		echo -e "${RED}Invalid port: ${SERVER_PORT}. Must be between 1 and 65535.${NC}"
+		exit 1
+	fi
+}
+
+function promptServerPort() {
+	echo ""
+	echo "What port do you want WireGuard to listen to?"
+	echo "   1) Default: ${WG_DEFAULT_PORT}"
+	echo "   2) Custom"
+	echo "   3) Random [${WG_RANDOM_PORT_MIN}-${WG_RANDOM_PORT_MAX}]"
+	until [[ ${PORT_CHOICE} =~ ^[1-3]$ ]]; do
+		read -rp "Port choice [1-3]: " -e -i 1 PORT_CHOICE
+	done
+	case "${PORT_CHOICE}" in
+	1)
+		SERVER_PORT="${WG_DEFAULT_PORT}"
+		;;
+	2)
+		until [[ ${SERVER_PORT} =~ ^[0-9]+$ ]] && [ "${SERVER_PORT}" -ge 1 ] && [ "${SERVER_PORT}" -le 65535 ]; do
+			read -rp "Custom port [1-65535]: " -e -i "${WG_DEFAULT_PORT}" SERVER_PORT
+		done
+		;;
+	3)
+		SERVER_PORT=$(generateRandomPort)
+		echo -e "${GREEN}Random port: ${SERVER_PORT}${NC}"
+		;;
+	esac
+}
+
 function installQuestions() {
 	if isAutoInstall; then
 		echo "WireGuard PBX installer — zero-touch mode (AUTO_INSTALL=y)"
@@ -214,7 +261,7 @@ function installQuestions() {
 		SERVER_WG_NIC="${WG_INTERFACE:-wg0}"
 		SERVER_WG_IPV4="${WG_SERVER_IPV4}"
 		SERVER_WG_IPV6="${WG_IPV6:-fd42:42:42::1}"
-		SERVER_PORT="${WG_PORT:-${WG_DEFAULT_PORT}}"
+		resolveServerPort "${WG_PORT:-${WG_DEFAULT_PORT}}"
 		ALLOWED_IPS="${WG_ALLOWED_IPS:-${WG_SUBNET_CIDR}}"
 		CLIENT_DNS_1=""
 		CLIENT_DNS_2=""
@@ -262,9 +309,7 @@ function installQuestions() {
 		read -rp "Server WireGuard IPv6: " -e -i fd42:42:42::1 SERVER_WG_IPV6
 	done
 
-	until [[ ${SERVER_PORT} =~ ^[0-9]+$ ]] && [ "${SERVER_PORT}" -ge 1 ] && [ "${SERVER_PORT}" -le 65535 ]; do
-		read -rp "Server WireGuard port [1-65535]: " -e -i "${WG_DEFAULT_PORT}" SERVER_PORT
-	done
+	promptServerPort
 
 	# Cloudflare DNS by default (optional for split-tunnel PBX clients)
 	until [[ ${CLIENT_DNS_1} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ || ${CLIENT_DNS_1} == "" ]]; do
