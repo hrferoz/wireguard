@@ -247,11 +247,6 @@ function prepareIptablesFirewall() {
 		systemctl stop firewalld
 		systemctl disable firewalld
 	fi
-
-	if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-		echo -e "${ORANGE}Disabling UFW — WireGuard uses iptables for firewall rules.${NC}"
-		ufw disable || true
-	fi
 }
 
 function appendWireGuardIptablesRules() {
