@@ -120,47 +120,64 @@ function wireguardModuleInstalled() {
 	find "/lib/modules/$(uname -r)" -name 'wireguard.ko*' 2>/dev/null | grep -q .
 }
 
-function installCentOS7WireGuardModule() {
-	local kver kmod_package
+function installCentOS7WireGuardFromSource() {
+	local kver build_dir
 
 	kver="$(uname -r)"
-	echo -e "${GREEN}Installing WireGuard kernel module for kernel ${kver}...${NC}"
+	build_dir="/usr/local/src/wireguard-build"
 
-	installPackages yum install -y epel-release
-	if ! rpm -q elrepo-release &>/dev/null; then
-		installPackages yum install -y https://www.elrepo.org/elrepo-release-7.el7.elrepo.noarch.rpm
-	fi
-	yum install -y yum-plugin-elrepo 2>/dev/null || true
+	echo -e "${GREEN}Building WireGuard from source for kernel ${kver}...${NC}"
 
-	kmod_package="kmod-wireguard-${kver}"
-	if yum --disablerepo='*' --enablerepo=elrepo list available "${kmod_package}" 2>/dev/null | grep -q "${kmod_package}"; then
-		installPackages yum --enablerepo=elrepo install -y "${kmod_package}"
-	fi
+	installPackages yum install -y gcc make git iptables
+	yum install -y libmnl-devel 2>/dev/null || yum install -y libmnl libmnl-devel 2>/dev/null || true
 
-	if ! wireguardModuleInstalled; then
-		installPackages yum --enablerepo=elrepo install -y kmod-wireguard
-	fi
-
-	depmod -a
-
-	if wireguardModuleInstalled; then
-		return 0
-	fi
-
-	echo -e "${ORANGE}ELRepo module not found for ${kver}, building with DKMS...${NC}"
-	installPackages yum install -y gcc make
 	if ! yum install -y "kernel-devel-${kver}"; then
-		echo -e "${RED}kernel-devel-${kver} is not available.${NC}"
-		echo "Update the running kernel, reboot, then re-run this installer:"
+		echo -e "${RED}kernel-devel-${kver} is required to compile WireGuard.${NC}"
+		echo "Install matching kernel headers, then re-run this installer:"
+		echo "  yum install -y kernel-devel-${kver}"
+		echo "If unavailable:"
 		echo "  yum update -y kernel"
 		echo "  reboot"
 		return 1
 	fi
 
-	yum install -y yum-plugin-copr 2>/dev/null || true
-	yum copr enable -y jdoss/wireguard 2>/dev/null || true
-	installPackages yum install -y wireguard-dkms
+	mkdir -p "${build_dir}"
+	cd "${build_dir}" || return 1
+
+	if [[ ! -d wireguard-linux-compat/.git ]]; then
+		rm -rf wireguard-linux-compat
+		installPackages git clone --depth 1 https://git.zx2c4.com/wireguard-linux-compat "${build_dir}/wireguard-linux-compat"
+	fi
+
+	echo -e "${GREEN}Compiling wireguard-linux-compat kernel module...${NC}"
+	make -C wireguard-linux-compat/src clean >/dev/null 2>&1 || true
+	if ! make -C wireguard-linux-compat/src; then
+		echo -e "${RED}Failed to build wireguard-linux-compat kernel module.${NC}"
+		return 1
+	fi
+	if ! make -C wireguard-linux-compat/src install; then
+		echo -e "${RED}Failed to install wireguard-linux-compat kernel module.${NC}"
+		return 1
+	fi
+
+	if [[ ! -d wireguard-tools/.git ]]; then
+		rm -rf wireguard-tools
+		installPackages git clone --depth 1 https://git.zx2c4.com/wireguard-tools "${build_dir}/wireguard-tools"
+	fi
+
+	echo -e "${GREEN}Compiling wireguard-tools userspace...${NC}"
+	make -C wireguard-tools/src clean >/dev/null 2>&1 || true
+	if ! make -C wireguard-tools/src; then
+		echo -e "${RED}Failed to build wireguard-tools.${NC}"
+		return 1
+	fi
+	if ! make -C wireguard-tools/src install; then
+		echo -e "${RED}Failed to install wireguard-tools.${NC}"
+		return 1
+	fi
+
 	depmod -a
+	echo -e "${GREEN}WireGuard built and installed from source.${NC}"
 }
 
 function loadWireGuardModule() {
@@ -169,7 +186,7 @@ function loadWireGuardModule() {
 	fi
 
 	if [[ ${OS} == 'centos7' ]] && ! wireguardModuleInstalled; then
-		installCentOS7WireGuardModule || return 1
+		installCentOS7WireGuardFromSource || return 1
 	fi
 
 	depmod -a 2>/dev/null || true
@@ -231,8 +248,7 @@ function installWireGuardPackages() {
 		fi
 		installPackages dnf install -y wireguard-tools iptables
 	elif [[ ${OS} == 'centos7' ]]; then
-		installPackages yum install -y wireguard-tools iptables
-		installCentOS7WireGuardModule
+		installCentOS7WireGuardFromSource
 		if ! loadWireGuardModule; then
 			echo -e "${RED}WireGuard kernel module could not be loaded for $(uname -r).${NC}"
 			exit 1
@@ -377,9 +393,9 @@ function showStartFailureDiagnostics() {
 			echo -e "${RED}  No wireguard.ko found for this kernel under /lib/modules/$(uname -r)/${NC}"
 		fi
 		if [[ ${OS} == 'centos7' ]]; then
-			echo "  Try: yum --enablerepo=elrepo install -y kmod-wireguard-$(uname -r)"
-			echo "  Then: depmod -a && modprobe wireguard"
-			echo "  If the kmod package is missing: yum update -y kernel && reboot"
+			echo "  Source build requires: yum install -y kernel-devel-$(uname -r) gcc make git"
+			echo "  Re-run this installer to compile wireguard-linux-compat + wireguard-tools"
+			echo "  If kernel-devel is missing: yum update -y kernel && reboot"
 		else
 			echo "  Try: modprobe wireguard"
 		fi
