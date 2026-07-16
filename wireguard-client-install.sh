@@ -2,6 +2,7 @@
 
 # WireGuard VPN client installer (PBX / IAX2 split-tunnel peers)
 # Companion to wireguard-install.sh
+# Role: VPN CLIENT / PBX PEER — not the public VPN hub
 # Version: 1.1.0
 
 RED='\033[0;31m'
@@ -503,8 +504,13 @@ function initialCheck() {
 function main() {
 	initialCheck
 
-	echo "WireGuard VPN client installer"
-	echo "For PBX / IAX2 split-tunnel peers (10.8.0.0/24)"
+	echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+	echo -e "${GREEN}║  WireGuard VPN CLIENT installer (PBX / Asterisk peer)      ║${NC}"
+	echo -e "${GREEN}║  Paste the .conf from the server — no public IP prompts.     ║${NC}"
+	echo -e "${GREEN}║  VPN hub/server uses: wireguard-install.sh                   ║${NC}"
+	echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+	echo ""
+	echo "Split-tunnel subnet: 10.8.0.0/24"
 	echo ""
 
 	WG_INTERFACE="${WG_INTERFACE:-${WG_DEFAULT_INTERFACE}}"

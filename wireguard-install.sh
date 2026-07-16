@@ -2,6 +2,8 @@
 
 # Secure WireGuard server installer (PBX / IAX2 VoIP tuned)
 # Based on https://github.com/angristan/wireguard-install
+# Role: VPN SERVER / HUB — do not run on PBX client peers
+# Version: 1.1.0
 
 RED='\033[0;31m'
 ORANGE='\033[0;33m'
@@ -311,7 +313,12 @@ function installQuestions() {
 		return
 	fi
 
-	echo "Welcome to the WireGuard installer!"
+	echo -e "${ORANGE}╔══════════════════════════════════════════════════════════════╗${NC}"
+	echo -e "${ORANGE}║  WireGuard VPN SERVER installer (hub / gateway)              ║${NC}"
+	echo -e "${ORANGE}║  Install this ONLY on the machine with the public IP.        ║${NC}"
+	echo -e "${ORANGE}║  PBX peers use: wireguard-client-install.sh                  ║${NC}"
+	echo -e "${ORANGE}╚══════════════════════════════════════════════════════════════╝${NC}"
+	echo ""
 	echo "The git repository is available at: https://github.com/angristan/wireguard-install"
 	echo ""
 	echo "This build is tuned for PBX / IAX2 split-tunnel deployments (${WG_SUBNET_CIDR})."
