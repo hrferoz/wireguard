@@ -2,6 +2,7 @@
 
 # WireGuard VPN client installer (PBX / IAX2 split-tunnel peers)
 # Companion to wireguard-install.sh
+# Version: 1.1.0
 
 RED='\033[0;31m'
 ORANGE='\033[0;33m'
